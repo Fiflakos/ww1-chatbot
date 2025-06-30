@@ -1,0 +1,8 @@
+streamlit
+openai
+nltk
+torch
+transformers
+sentence-transformers
+faiss-cpu
+requests

@@ -1,0 +1,13 @@
+# ignore Python venv
+.venv/
+venv/
+
+# ignore caches, logs, OS cruft
+__pycache__/
+*.py[cod]
+.DS_Store
+logs/
+
+# ignore data, models, large binaries
+data_cleaned/
+models/
