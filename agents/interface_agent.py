@@ -2,65 +2,102 @@
 
 import os
 import streamlit as st
-import requests
+from transformers import pipeline as hf_pipeline
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
-# ─── 1) Hugging Face credentials & model ────────────────────────────────────────
-HF_API_TOKEN = os.getenv("HF_API_TOKEN")
-HF_MODEL     = "google/flan-t5-base"
-HF_URL       = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+DATA_DIR = "data_cleaned"      # your corpus folder
+FAISS_DIR = "vectorstore/faiss_index"
 
-# ─── 2) Build & cache your retriever once ────────────────────────────────────────
+# 1) Load & cache retriever + generator
 @st.cache_resource
-def load_agent():
-    from retrieval_agent import RetrievalAgent
-    return RetrievalAgent(corpus_dir="data_cleaned")
+def load_services():
+    # embeddings for FAISS
+    embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # load your prebuilt FAISS index (allow pickle since it's your own data)
+    store = FAISS.load_local(
+        FAISS_DIR,
+        embed,
+        allow_dangerous_deserialization=True
+    )
+    retriever = store.as_retriever(search_kwargs={"k": 5})
 
-agent = load_agent()
+    # huggingface text2text pipeline
+    gen = hf_pipeline(
+        "text2text-generation",
+        model="google/flan-t5-small",
+        device="cpu",
+        max_length=256,
+        do_sample=True,
+        temperature=0.7,
+    )
 
-# ─── 3) Streamlit UI ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="WW1 Historical Chatbot")
+    return retriever, gen
+
+retriever, generator = load_services()
+
+
+# 2) Initialize chat history
+if "history" not in st.session_state:
+    # history is a list of dicts {role: "user"|"assistant", content: str}
+    st.session_state.history = []
+
 st.title("🪖 WW1 Historical Chatbot")
 st.write("Ask anything across the full WW1 corpus—no uploads needed.")
 
-q = st.text_input("💬 What would you like to ask?")
-if q:
-    # ─── 3a) Retrieve top‐k passages ─────────────────────────────────────────────
-    hits = agent.search(q, top_k=5)
-    st.write("📌 Top passages:")
-    for i, (fn, score, snippet) in enumerate(hits, start=1):
-        st.write(f"{i}. **{fn}**  (score {score:.2f})")
-        st.write(snippet + "…")
 
-    # ─── 4) Build your generation prompt ─────────────────────────────────────────
-    context = "\n\n".join(f"{fn}: {snippet}" for fn, _, snippet in hits)
-    prompt  = f"Context:\n{context}\n\nQuestion: {q}"
+# 3) Render chat messages
+for msg in st.session_state.history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-    # ─── 5) Call HF Inference API ────────────────────────────────────────────────
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 256,
-            "temperature":      0.7,
-            "top_p":            0.9
-        },
-        "options": {"wait_for_model": True}
-    }
 
-    with st.spinner("🧠 Thinking..."):
-        resp = requests.post(HF_URL, headers=headers, json=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            # HF /models endpoint returns either a list or dict
-            if isinstance(data, list) and data and "generated_text" in data[0]:
-                answer = data[0]["generated_text"]
-            elif isinstance(data, dict) and "generated_text" in data:
-                answer = data["generated_text"]
-            else:
-                answer = str(data)
-            st.markdown(f"**📜 Answer:** {answer}")
-        else:
-            st.error(f"❌ HF inference error {resp.status_code}: {resp.text}")
+# 4) Chat input
+user_input = st.chat_input("💬 What would you like to ask?")
+if not user_input:
+    st.stop()
 
+# 5) Add user message to history
+st.session_state.history.append({"role": "user", "content": user_input})
+with st.chat_message("user"):
+    st.markdown(user_input)
+
+
+# 6) Retrieve & build context
+docs = retriever.get_relevant_documents(user_input)
+if not docs:
+    reply = "Sorry, I couldn’t find any letters or diaries that mention that."
 else:
-    st.info("Enter a question to get started.")
+    # for each doc we have: d.metadata["source"] & d.page_content
+    snippets = []
+    for d in docs:
+        src = d.metadata.get("source", "unknown.txt")
+        text = d.page_content.replace("\n", " ").strip()
+        snippet = text[:200] + ("…" if len(text) > 200 else "")
+        snippets.append(f"**{src}**: {snippet}")
+
+    context = "\n\n".join(snippets)
+
+    # 7) Build a single prompt
+    prompt = f"""
+You are a First World War historian assistant. Use ONLY the snippets below to answer the user’s question.
+If the snippets don’t cover the question, say so.
+
+--- Snippets ---
+{context}
+
+--- Question ---
+{user_input}
+
+Please answer in 3–5 sentences and mention the source IDs you used.
+""".strip()
+
+    # 8) Call HF generator
+    out = generator(prompt)
+    answer = out[0].get("generated_text", "").strip()
+    reply = answer
+
+# 9) Display assistant reply
+st.session_state.history.append({"role": "assistant", "content": reply})
+with st.chat_message("assistant"):
+    st.markdown(reply)

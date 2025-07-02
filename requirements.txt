@@ -1,8 +1,8 @@
-streamlit
-openai
-nltk
-torch
-transformers
-sentence-transformers
-faiss-cpu
-requests
+streamlit>=1.4
+nltk>=3.9
+transformers>=4.30
+sentence-transformers>=2.2
+faiss-cpu>=1.11
+langchain>=0.0.223
+langchain-community>=0.0.144
+langchain-huggingface>=0.0.2
