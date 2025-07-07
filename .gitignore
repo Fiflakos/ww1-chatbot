@@ -11,3 +11,5 @@ logs/
 # ignore data, models, large binaries
 data_cleaned/
 models/
+.streamlit/secrets.toml
+.streamlit/secrets.toml
