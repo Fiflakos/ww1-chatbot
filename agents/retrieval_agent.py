@@ -1,27 +1,36 @@
 # agents/retrieval_agent.py
 
-import os
-from retrieval_modules.bm25 import BM25Retriever
+import os, glob
+import nltk
+from nltk.tokenize import word_tokenize
+from rank_bm25 import BM25Okapi
 
 class RetrievalAgent:
     def __init__(self, corpus_dir: str):
+        # ensure punkt is installed
+        nltk.download("punkt", quiet=True)
+        
+        # load all .txt files
+        self.file_paths = sorted(glob.glob(os.path.join(corpus_dir, "**", "*.txt"), recursive=True))
+        self.file_names = [os.path.relpath(p, corpus_dir) for p in self.file_paths]
         self.texts = []
-        self.names = []
-
-        # walk through corpus_dir and load every .txt
-        for root, _, files in os.walk(corpus_dir):
-            for fn in files:
-                if fn.lower().endswith(".txt"):
-                    path = os.path.join(root, fn)
-                    with open(path, "r", encoding="utf-8") as f:
-                        txt = f.read()
-                    self.texts.append(txt)
-                    # store relative path as ID
-                    rel = os.path.relpath(path, corpus_dir)
-                    self.names.append(rel)
-
-        # build BM25 index
-        self._bm25 = BM25Retriever(self.texts, self.names)
+        for p in self.file_paths:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                self.texts.append(f.read())
+        
+        # build BM25
+        tokenized_corpus = [word_tokenize(t.lower()) for t in self.texts]
+        if not tokenized_corpus:
+            raise ValueError(f"no documents found under {corpus_dir}")
+        self.bm25 = BM25Okapi(tokenized_corpus)
 
     def search(self, query: str, top_k: int = 5):
-        return self._bm25.retrieve(query, top_k)
+        tokens = word_tokenize(query.lower())
+        scores = self.bm25.get_scores(tokens)
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        hits = []
+        for idx in ranked:
+            score = float(scores[idx])
+            snippet = self.texts[idx][:300].replace("\n", " ").strip()
+            hits.append((self.file_names[idx], score, snippet))
+        return hits

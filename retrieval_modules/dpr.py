@@ -2,52 +2,35 @@
 
 import faiss
 from sentence_transformers import SentenceTransformer
-from typing import List, Dict
+from typing import List, Tuple
 
 class DPRRetriever:
-    """
-    Dense Passage Retriever backed by a Sentence-Transformer + FAISS index.
-    Exposes:
-      - __init__(documents, top_k=5)
-      - retrieve(query) -> List[Dict]  # each dict has keys 'id', 'score', 'text'
-    """
-
-    def __init__(self, documents: List[Dict], top_k: int = 5):
-        """
-        documents: a list of dicts, each with at least:
-           {'id': <unique-str>, 'text': <string>}
-        top_k: how many passages to return per query
-        """
-        self.documents = documents
+    def __init__(self, texts, file_names, top_k=5):
+        if len(texts) != len(file_names):
+            raise ValueError("texts and file_names must be the same length")
+        self.texts = texts
+        self.file_names = file_names
         self.top_k = top_k
 
-        # load the Sentence-Transformer model
+        # Load the encoder and build the FAISS index
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        # encode all docs in a single shot
-        texts = [doc["text"] for doc in documents]
-        self.embeddings = self.model.encode(texts, convert_to_numpy=True)
+        embeddings = self.model.encode(self.texts, convert_to_numpy=True, show_progress_bar=False)
+        dim = embeddings.shape[1]
+        self.index = faiss.IndexFlatIP(dim)
+        # Normalize for cosine similarity
+        faiss.normalize_L2(embeddings)
+        self.index.add(embeddings)
+        self.embeddings = embeddings
 
-        # build a simple flat L2 FAISS index
-        d = self.embeddings.shape[1]
-        self.index = faiss.IndexFlatL2(d)
-        self.index.add(self.embeddings)  # add vectors to the index
-
-    def retrieve(self, query: str) -> List[Dict]:
-        """
-        Encode the query, search the FAISS index, and return the top_k hits
-        as a list of dicts: {'id', 'score', 'text'}.
-        """
-        # encode query
+    def retrieve(self, query: str, top_k: int = None) -> List[Tuple[str, float, str]]:
+        k = top_k or self.top_k
         q_emb = self.model.encode([query], convert_to_numpy=True)
-        # search
-        distances, indices = self.index.search(q_emb, self.top_k)
-
+        faiss.normalize_L2(q_emb)
+        # Search
+        scores, indices = self.index.search(q_emb, k)
         results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            doc = self.documents[idx]
-            results.append({
-                "id": doc["id"],
-                "score": float(dist),
-                "text": doc["text"]
-            })
+        for score, idx in zip(scores[0], indices[0]):
+            fname = self.file_names[idx]
+            snippet = self.texts[idx]
+            results.append((fname, float(score), snippet))
         return results

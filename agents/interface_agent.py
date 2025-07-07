@@ -2,102 +2,58 @@
 
 import os
 import streamlit as st
-from transformers import pipeline as hf_pipeline
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+import openai
+from agents.retrieval_agent import RetrievalAgent
 
-DATA_DIR = "data_cleaned"      # your corpus folder
-FAISS_DIR = "vectorstore/faiss_index"
+# 1) Set your OpenAI key
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# 1) Load & cache retriever + generator
+# 2) Cache the retriever so it only builds once
 @st.cache_resource
-def load_services():
-    # embeddings for FAISS
-    embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    # load your prebuilt FAISS index (allow pickle since it's your own data)
-    store = FAISS.load_local(
-        FAISS_DIR,
-        embed,
-        allow_dangerous_deserialization=True
-    )
-    retriever = store.as_retriever(search_kwargs={"k": 5})
+def load_retriever():
+    return RetrievalAgent(corpus_dir="data_cleaned")
 
-    # huggingface text2text pipeline
-    gen = hf_pipeline(
-        "text2text-generation",
-        model="google/flan-t5-small",
-        device="cpu",
-        max_length=256,
-        do_sample=True,
-        temperature=0.7,
-    )
+retriever = load_retriever()
 
-    return retriever, gen
-
-retriever, generator = load_services()
-
-
-# 2) Initialize chat history
-if "history" not in st.session_state:
-    # history is a list of dicts {role: "user"|"assistant", content: str}
-    st.session_state.history = []
-
+st.set_page_config(page_title="🪖 WW1 Historical Chatbot")
 st.title("🪖 WW1 Historical Chatbot")
 st.write("Ask anything across the full WW1 corpus—no uploads needed.")
 
-
-# 3) Render chat messages
-for msg in st.session_state.history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-
-# 4) Chat input
-user_input = st.chat_input("💬 What would you like to ask?")
-if not user_input:
+q = st.text_input("💬 What would you like to ask?")
+if not q:
     st.stop()
 
-# 5) Add user message to history
-st.session_state.history.append({"role": "user", "content": user_input})
-with st.chat_message("user"):
-    st.markdown(user_input)
+# 3) Retrieve top-k
+hits = retriever.search(q, top_k=5)
+# filter out zero-score
+hits = [(fn, sc, sn) for fn, sc, sn in hits if sc > 0]
 
-
-# 6) Retrieve & build context
-docs = retriever.get_relevant_documents(user_input)
-if not docs:
-    reply = "Sorry, I couldn’t find any letters or diaries that mention that."
+if not hits:
+    st.warning("No relevant passages found.")
 else:
-    # for each doc we have: d.metadata["source"] & d.page_content
-    snippets = []
-    for d in docs:
-        src = d.metadata.get("source", "unknown.txt")
-        text = d.page_content.replace("\n", " ").strip()
-        snippet = text[:200] + ("…" if len(text) > 200 else "")
-        snippets.append(f"**{src}**: {snippet}")
+    st.subheader("📌 Top passages")
+    for i, (fn, score, snippet) in enumerate(hits, 1):
+        st.markdown(f"**{i}. {fn}**  _(score {score:.2f})_")
+        if snippet:
+            st.write(snippet + "…")
 
-    context = "\n\n".join(snippets)
+    # 4) Build the prompt
+    context = "\n\n".join(f"{fn}: {sn}" for fn, _, sn in hits)
+    system = "You are a WW1 historian assistant. Answer concisely and cite which letter/diary entry you used."
+    user = f"Context:\n{context}\n\nQuestion: {q}"
 
-    # 7) Build a single prompt
-    prompt = f"""
-You are a First World War historian assistant. Use ONLY the snippets below to answer the user’s question.
-If the snippets don’t cover the question, say so.
-
---- Snippets ---
-{context}
-
---- Question ---
-{user_input}
-
-Please answer in 3–5 sentences and mention the source IDs you used.
-""".strip()
-
-    # 8) Call HF generator
-    out = generator(prompt)
-    answer = out[0].get("generated_text", "").strip()
-    reply = answer
-
-# 9) Display assistant reply
-st.session_state.history.append({"role": "assistant", "content": reply})
-with st.chat_message("assistant"):
-    st.markdown(reply)
+    # 5) Call ChatCompletion (new 1.x interface)
+    try:
+        resp = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user}
+            ],
+            temperature=0.7,
+            max_tokens=256,
+        )
+        answer = resp.choices[0].message.content
+        st.markdown(f"**📜 Answer:** {answer}")
+    except Exception as e:
+        st.error(f"❌ OpenAI API error: {e}")

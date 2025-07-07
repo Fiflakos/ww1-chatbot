@@ -1,42 +1,31 @@
 # scripts/build_vectorstore.py
+from pathlib import Path
+from langchain_community.vectorstores.faiss import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.schema import Document
 import os
-from glob import glob
-from nltk import word_tokenize
-from rank_bm25 import BM25Okapi
-import faiss
-from sentence_transformers import SentenceTransformer
-import pickle
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-
 
 DATA_DIR = "data_cleaned"
-INDEX_DIR = "vectorstore/faiss_index"
-os.makedirs(INDEX_DIR, exist_ok=True)
+INDEX_DIR = Path("vectorstore/faiss_index")
 
-# 1. Load all your docs
-paths = glob(os.path.join(DATA_DIR, "**/*.txt"), recursive=True)
-texts = []
-metadatas = []
-for p in paths:
-    with open(p, encoding="utf-8") as f:
-        texts.append(f.read())
-    # store the relative filename so we can refer back
-    metadatas.append({"source": os.path.relpath(p, DATA_DIR)})
+def load_corpus():
+    texts = []
+    metadatas = []
+    for txt in Path(DATA_DIR).rglob("*.txt"):
+        text = txt.read_text(encoding="utf-8")
+        # store filename in metadata so we can surface it in the UI
+        metadatas.append({"source": txt.name})
+        texts.append(text)
+    return texts, metadatas
 
-# 2. Embed them
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-embs = embedder.encode(texts, convert_to_numpy=True)
+def main():
+    texts, metadatas = load_corpus()
+    embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # build the FAISS index
+    db = FAISS.from_texts(texts, embed, metadatas=metadatas)
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    db.save_local(str(INDEX_DIR))
+    print(f"✅ Built and saved FAISS index under {INDEX_DIR}")
 
-# 3. Build FAISS index
-index = faiss.IndexFlatL2(embs.shape[1])
-index.add(embs)
-faiss.write_index(index, os.path.join(INDEX_DIR, "index.faiss"))
-
-# 4. Save metadata and raw texts
-with open(os.path.join(INDEX_DIR, "metadatas.pkl"), "wb") as f:
-    pickle.dump(metadatas, f)
-with open(os.path.join(INDEX_DIR, "texts.pkl"), "wb") as f:
-    pickle.dump(texts, f)
-
-print("✅ Built FAISS index at", INDEX_DIR)
+if __name__ == "__main__":
+    main()

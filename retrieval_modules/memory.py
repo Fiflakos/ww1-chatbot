@@ -1,32 +1,18 @@
-# retrieval_modules/memory.py
-
-from typing import List, Dict
-
 class MemoryRetriever:
-    """
-    A very simple in‐memory “retriever”:
-    - store(query) saves past queries
-    - retrieve(top_k) returns the last top_k queries as zero-score hits
-    """
+    def __init__(self, texts, file_names):
+        self.texts = texts
+        self.file_names = file_names
 
-    def __init__(self) -> None:
-        self._history: List[str] = []
+    def retrieve(self, query, top_k=5):
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+        import numpy as np
 
-    def store(self, query: str) -> None:
-        """Save a user query into memory."""
-        self._history.append(query)
+        vectorizer = TfidfVectorizer().fit(self.texts)
+        query_vec = vectorizer.transform([query])
+        doc_vecs = vectorizer.transform(self.texts)
 
-    def retrieve(self, top_k: int = 5) -> List[Dict]:
-        """
-        Return up to the last `top_k` queries as pseudo‐documents.
-        Each hit is a dict with keys: id, score, text.
-        """
-        hits = []
-        # take the last top_k items, in reverse (most recent first)
-        for q in self._history[-top_k:][::-1]:
-            hits.append({
-                "id":    f"[Memory] {q}",
-                "score": 0.0,
-                "text":  q
-            })
-        return hits
+        scores = cosine_similarity(query_vec, doc_vecs)[0]
+        top_indices = np.argsort(scores)[::-1][:top_k]
+
+        return [(self.texts[i], self.file_names[i], float(scores[i])) for i in top_indices]
