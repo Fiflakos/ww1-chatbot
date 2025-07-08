@@ -41,3 +41,9 @@ class LocalHistBERTGenerator:
         )
 
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+
+
+
+
+####

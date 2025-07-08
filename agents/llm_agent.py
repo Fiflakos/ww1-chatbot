@@ -23,3 +23,4 @@ def ask(req: AskRequest):
     # 2) generate via local model
     answer = generator.generate(req.question, hits)
     return AskResponse(answer=answer)
+#####
