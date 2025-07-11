@@ -1,62 +1,136 @@
-# agents/interface_agent.py
+# interface_agent.py
 
 import os
+from dotenv import load_dotenv
+
 import streamlit as st
 import openai
-from agents.retrieval_agent import RetrievalAgent
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# 1) Set your OpenAI key
+from retrieval_agent import RetrievalAgent
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) Page configuration (must be first)
+# ──────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="🪖 WW1 Historical Chatbot", layout="wide")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) Load environment and API key
+# ──────────────────────────────────────────────────────────────────────────────
+load_dotenv()  # loads .env
 openai.api_key = os.getenv("OPENAI_API_KEY")
-
-# 2) Cache the retriever so it only builds once
-@st.cache_resource
-def load_retriever():
-    return RetrievalAgent(corpus_dir="data_cleaned")
-
-retriever = load_retriever()
-
-st.set_page_config(page_title="🪖 WW1 Historical Chatbot")
-st.title("🪖 WW1 Historical Chatbot")
-st.write("Ask anything across the full WW1 corpus—no uploads needed.")
-
-q = st.text_input("💬 What would you like to ask?")
-if not q:
+if not openai.api_key:
+    st.error("🔑 Please set OPENAI_API_KEY in your .env file")
     st.stop()
 
-# 3) Retrieve top-k
-hits = retriever.search(q, top_k=5)
-# filter out zero-score
-hits = [(fn, sc, sn) for fn, sc, sn in hits if sc > 0]
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) Sidebar navigation
+# ──────────────────────────────────────────────────────────────────────────────
+mode = st.sidebar.radio("Navigate to", ["Chat", "Analytics"])
 
-if not hits:
-    st.warning("No relevant passages found.")
-else:
-    st.subheader("📌 Top passages")
-    for i, (fn, score, snippet) in enumerate(hits, 1):
-        st.markdown(f"**{i}. {fn}**  _(score {score:.2f})_")
-        if snippet:
-            st.write(snippet + "…")
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared retriever
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_resource
+def get_retriever():
+    return RetrievalAgent(txt_dir="data_cleaned", json_dir="data")
 
-    # 4) Build the prompt
-    context = "\n\n".join(f"{fn}: {sn}" for fn, _, sn in hits)
-    system = "You are a WW1 historian assistant. Answer concisely and cite which letter/diary entry you used."
-    user = f"Context:\n{context}\n\nQuestion: {q}"
+retriever = get_retriever()
 
-    # 5) Call ChatCompletion (new 1.x interface)
-    try:
+if mode == "Chat":
+    # ──────────────────────────────────────────────────────────────────────────
+    # Chat page
+    # ──────────────────────────────────────────────────────────────────────────
+    st.title("🪖 WW1 Historical Chatbot")
+    st.write("Ask anything across the full WW1 corpus—no uploads needed.")
+
+    # helper to generate answers
+    def generate_answer(query: str, top_k: int = 5):
+        hits = retriever.search(query, top_k=top_k)
+        hits = [(fn, sc, sn) for fn, sc, sn in hits if sc > 0]
+
+        if not hits:
+            return "No relevant passages found.", []
+
+        context = "\n\n".join(f"{fn}: {sn}…" for fn, _, sn in hits)
+        system = (
+            "You are a knowledgeable WW1 historian assistant. "
+            "Answer concisely, cite entries, and ground your answer in the provided context."
+        )
+        user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
+
         resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user",   "content": user}
+                {"role": "user",   "content": user_prompt},
             ],
             temperature=0.7,
-            max_tokens=256,
+            max_tokens=300,
         )
-        answer = resp.choices[0].message.content
-        st.markdown(f"**📜 Answer:** {answer}")
-    except Exception as e:
-        st.error(f"❌ OpenAI API error: {e}")
+        answer = resp.choices[0].message.content.strip()
+        return answer, hits
 
+    # manage chat history
+    if "history" not in st.session_state:
+        st.session_state.history = []
+    if "last_hits" not in st.session_state:
+        st.session_state.last_hits = []
 
-####sdkasdjasdlkadj
+    # input form (clears on submit)
+    with st.form(key="chat_form", clear_on_submit=True):
+        query = st.text_input("💬 Your question", key="input")
+        submit = st.form_submit_button("Send")
+
+    if submit and query:
+        with st.spinner("🔍 Retrieving and generating answer…"):
+            answer, hits = generate_answer(query)
+        st.session_state.history.append(("user", query))
+        st.session_state.history.append(("bot",  answer))
+        st.session_state.last_hits = hits
+
+    # render history
+    for role, text in st.session_state.history:
+        if role == "user":
+            st.markdown(f"**You:** {text}")
+        else:
+            st.markdown(f"**Bot:** {text}")
+
+    # show top passages
+    if st.session_state.last_hits:
+        st.subheader("📌 Top passages")
+        for i, (fn, score, snippet) in enumerate(st.session_state.last_hits, start=1):
+            st.markdown(f"**{i}. {fn}** _(score {score:.2f})_")
+            st.write(snippet + "…")
+
+else:
+    # ──────────────────────────────────────────────────────────────────────────
+    # Analytics page
+    # ──────────────────────────────────────────────────────────────────────────
+    st.title("📊 Evaluation Analytics")
+    RESULTS_FILE = "results_all_docs.csv"
+    if not os.path.exists(RESULTS_FILE):
+        st.error(f"Couldn’t find {RESULTS_FILE}. Run your evaluation script first.")
+        st.stop()
+
+    # 1) Load
+    df = pd.read_csv(RESULTS_FILE)
+
+    # 2) Summary statistics
+    st.subheader("Summary statistics")
+    st.dataframe(
+        df.describe().T,  # transpose for readability
+        use_container_width=True
+    )
+
+    # 3) Metric distributions
+    st.subheader("Metric distributions")
+    distributions = ["rougeL_f1", "emb_cosine", "faithfulness"]
+    for metric in distributions:
+        st.markdown(f"**{metric}**")
+        fig, ax = plt.subplots()
+        ax.hist(df[metric].dropna(), bins=50)
+        ax.set_xlabel(metric)
+        ax.set_ylabel("Count")
+        st.pyplot(fig)
