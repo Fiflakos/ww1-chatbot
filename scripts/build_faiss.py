@@ -1,18 +1,22 @@
 # scripts/build_faiss.py
 import os
+import json
 import pickle
 import faiss
 import numpy as np
 from openai import OpenAIError, OpenAI
 from pathlib import Path
 
-# 1. Load your cleaned-text files
-DATA_DIR = Path("data_cleaned")
-paths = sorted(DATA_DIR.rglob("*.txt"))
-texts = [p.read_text(encoding="utf-8") for p in paths]
-names = [str(p.relative_to(DATA_DIR))     for p in paths]
+# 1. Load your JSON file
+json_path = Path("data/annotated2_ww1_qa.json")
+with open(json_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-# 2. Ask OpenAI for embeddings in batches
+# 2. Extract texts and IDs (or fallback to "doc_001", etc.)
+texts = [item.get("text", "") for item in data]
+names = [item.get("id", f"doc_{i}") for i, item in enumerate(data)]
+
+# 3. Ask OpenAI for embeddings in batches
 import openai
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
