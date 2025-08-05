@@ -1,4 +1,8 @@
 # agents/retrieval_agent.py
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 
 import os, glob
 import json
@@ -53,4 +57,23 @@ class RetrievalAgent:
 
 
 
+# test_retrieval.py
+from retrieval_modules.bm25 import BM25Retriever  # or RetrievalAgent if using that version
 
+def main():
+    json_path = "data/annotated2_ww1_qa.json"  # ✅ Replace with actual path to your dataset
+    query = "What was life like in the trenches?"
+
+    retriever = BM25Retriever(json_path)  # or RetrievalAgent(json_path)
+    results = retriever.search(query, top_k=3)  # or .search(query) if using RetrievalAgent
+
+    print(f"\nTop results for query: \"{query}\"\n")
+    for i, (doc_id, score, snippet) in enumerate(results, 1):
+        print(f"Rank {i}:")
+        print(f"Document ID: {doc_id}")
+        print(f"BM25 Score: {score:.4f}")
+        print(f"Snippet: {snippet}")
+        print("-" * 80)
+
+if __name__ == "__main__":
+    main()
